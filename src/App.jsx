@@ -44,7 +44,7 @@ const App = () => {
       setJoined(true);
     }
 
-    socket.current = io("https://messanger-backend-eta.vercel.app");
+    socket.current = io("https://messanger-backend-theta.vercel.app");
 
     socket.current.on("connect", () => {
       if (savedUserName) {
