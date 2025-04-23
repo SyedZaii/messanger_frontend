@@ -52,7 +52,7 @@ const App = () => {
   useEffect(() => {
     if (!joined || !userName) return;
 
-    socket.current = io("http://localhost:8000");
+    socket.current = io("https://messanger-backend-a4qc.onrender.com");
 
     socket.current.on("connect", () => {
       socket.current.emit("user-joined", userName);
