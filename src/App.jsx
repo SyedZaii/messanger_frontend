@@ -23,33 +23,39 @@ const App = () => {
   const [privateMessages, setPrivateMessages] = useState({});
   const [selectedUser, setSelectedUser] = useState(null);
   const typingTimeoutRef = useRef(null);
+  const hasLoadedLocalStorage = useRef(false);
+
   const getInitials = (name) => {
-    const nameParts = name.split(" ");
-    if (nameParts.length === 1) {
-      return nameParts[0].charAt(0).toUpperCase();
-    }
-    return (
-      nameParts[0].charAt(0).toUpperCase() +
-      nameParts[1].charAt(0).toUpperCase()
-    );
+    const parts = name.trim().split(" ");
+    return parts.map((p) => p[0].toUpperCase()).join("").slice(0, 2);
   };
 
+  // Load from localStorage only once on initial mount
   useEffect(() => {
-    const savedUserName = localStorage.getItem("userName");
-    const savedMessages = localStorage.getItem("messages");
+    if (!hasLoadedLocalStorage.current) {
+      const savedUserName = localStorage.getItem("userName");
+      const savedMessages = localStorage.getItem("messages");
+      const savedPrivateMessages = localStorage.getItem("privateMessages");
 
-    if (savedMessages) setMessages(JSON.parse(savedMessages));
-    if (savedUserName) {
-      setUserName(savedUserName);
-      setJoined(true);
+      if (savedMessages) setMessages(JSON.parse(savedMessages));
+      if (savedPrivateMessages) setPrivateMessages(JSON.parse(savedPrivateMessages));
+      if (savedUserName) {
+        setUserName(savedUserName);
+        setJoined(true);
+      }
+
+      hasLoadedLocalStorage.current = true;
     }
+  }, []);
 
-    socket.current = io("https://messanger-backend-a4qc.onrender.com");
+  // Set up socket connection once user is joined
+  useEffect(() => {
+    if (!joined || !userName) return;
+
+    socket.current = io("http://localhost:8000");
 
     socket.current.on("connect", () => {
-      if (savedUserName) {
-        socket.current.emit("user-joined", savedUserName);
-      }
+      socket.current.emit("user-joined", userName);
     });
 
     socket.current.on("receive-message", (data) => {
@@ -61,21 +67,19 @@ const App = () => {
     });
 
     socket.current.on("update-user-list", (userList) => {
-      setOnlineUsers(userList.filter((user) => user !== savedUserName));
+      setOnlineUsers(userList.filter((user) => user !== userName));
     });
 
     socket.current.on("user-typing", ({ user, from }) => {
       setTypingIndicators((prev) => ({
         ...prev,
-        [from || "public"]: [
-          ...new Set([...(prev[from || "public"] || []), user]),
-        ],
+        [from || "public"]: [...new Set([...(prev[from || "public"] || []), user])],
       }));
     });
 
     socket.current.on("user-stop-typing", ({ user, from }) => {
+      const scope = from || "public";
       setTypingIndicators((prev) => {
-        const scope = from || "public";
         const updated = (prev[scope] || []).filter((u) => u !== user);
         return { ...prev, [scope]: updated };
       });
@@ -86,6 +90,7 @@ const App = () => {
         const updated = { ...prev };
         if (!updated[data.from]) updated[data.from] = [];
         updated[data.from].push(data);
+        localStorage.setItem("privateMessages", JSON.stringify(updated));
         return updated;
       });
 
@@ -98,9 +103,10 @@ const App = () => {
     });
 
     return () => {
-      socket.current.disconnect();
+      socket.current?.disconnect();
+      socket.current = null;
     };
-  }, [selectedUser]);
+  }, [joined, userName, selectedUser]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -108,7 +114,6 @@ const App = () => {
 
   const joinChat = () => {
     if (userName.trim()) {
-      socket.current.emit("user-joined", userName);
       localStorage.setItem("userName", userName);
       setJoined(true);
     }
@@ -116,31 +121,30 @@ const App = () => {
 
   const handleInputChange = (e) => {
     setMessage(e.target.value);
-
     const typingPayload = { to: selectedUser || null };
 
     if (!isTyping) {
       setIsTyping(true);
-      socket.current.emit("typing", typingPayload);
+      socket.current?.emit("typing", typingPayload);
     }
 
     clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
-      socket.current.emit("stop-typing", typingPayload);
+      socket.current?.emit("stop-typing", typingPayload);
     }, 1000);
   };
 
   const sendMessage = () => {
     if (message.trim()) {
-      socket.current.emit("send-message", { type: "text", content: message });
+      socket.current?.emit("send-message", { type: "text", content: message });
       setMessage("");
     }
   };
 
   const sendPrivateMessage = () => {
     if (message.trim() && selectedUser) {
-      socket.current.emit("private-message", { to: selectedUser, message });
+      socket.current?.emit("private-message", { to: selectedUser, message });
       setPrivateMessages((prev) => {
         const updated = { ...prev };
         if (!updated[selectedUser]) updated[selectedUser] = [];
@@ -149,6 +153,7 @@ const App = () => {
           content: message,
           time: new Date().toISOString(),
         });
+        localStorage.setItem("privateMessages", JSON.stringify(updated));
         return updated;
       });
       setMessage("");
@@ -160,12 +165,22 @@ const App = () => {
   };
 
   const logout = () => {
-    setMessages([]);
     localStorage.removeItem("messages");
+    localStorage.removeItem("privateMessages");
     localStorage.removeItem("userName");
+
     setUserName("");
-    setJoined(false);
+    setMessages([]);
+    setPrivateMessages({});
+    setUnreadCounts({});
     setSelectedUser(null);
+    setTypingIndicators({});
+    setJoined(false);
+
+    if (socket.current) {
+      socket.current.disconnect();
+      socket.current = null;
+    }
   };
 
   return (
@@ -184,131 +199,90 @@ const App = () => {
         <>
           <header className="chat-header">
             Welcome, {userName}
-            <button onClick={logout} className="logout-btn">
-            ⏻
-            </button>
+            <button onClick={logout} className="logout-btn">⏻</button>
           </header>
+
           <div className="chat-body">
             <div className="user-list">
-              
               <ul>
-              <li className="self-name mt-0 mb-2">👤 {userName} (You)</li>
-              <li
+                <li className="self-name">👤 {userName} (You)</li>
+                <li
                   onClick={() => setSelectedUser(null)}
                   className={!selectedUser ? "selected" : ""}
                 >
                   🟢 Public Chat
                 </li>
-                
-                <h4 className="mb-0 mt-2">Online Users</h4>
-              {onlineUsers .filter((user) => user !== userName).map((user, index) => (
-  <li
-    key={index}
-    onClick={() => {
-      if (user !== userName) {
-        setSelectedUser(user);
-        setUnreadCounts((prev) => ({ ...prev, [user]: 0 }));
-      }
-    }}
-    className={selectedUser === user ? "selected" : ""}
-    id="user-list"
-  >
-    <div className="user-avatar">{getInitials(user)}</div>
-    {user} {user === userName && <em className="self-tag">(You)</em>}
-    {user !== userName && unreadCounts[user] > 0 && (
-      <span className="msg-count">
-        {unreadCounts[user] > 99 ? "99+" : unreadCounts[user]}
-      </span>
-    )}
-  </li>
-))}
-                
+                <h4>Online Users</h4>
+                {onlineUsers.map((user, index) => (
+                  <li
+                    key={index}
+                    onClick={() => {
+                      setSelectedUser(user);
+                      setUnreadCounts((prev) => ({ ...prev, [user]: 0 }));
+                    }}
+                    className={selectedUser === user ? "selected" : ""}
+                  >
+                    <div className="user-avatar">{getInitials(user)}</div>
+                    {user}
+                    {unreadCounts[user] > 0 && (
+                      <span className="msg-count">
+                        {unreadCounts[user] > 99 ? "99+" : unreadCounts[user]}
+                      </span>
+                    )}
+                  </li>
+                ))}
               </ul>
             </div>
 
             <div className="chat-box">
-              {selectedUser
-                ? (privateMessages[selectedUser] || []).map((msg, index) => (
-                    <div
-                      key={index}
-                      className={`chat-msg ${
-                        msg.from === userName ? "self" : "other"
-                      }`}
-                    >
-                      <div className="chat-msg-wrapper">
-                        <div className="chat-avatar">
-                          {getInitials(msg.from)}
-                        </div>
-                        <div className="chat-content">
-                          <span className="chat-user">{msg.from}</span>
-                          <div className="chat-text">{msg.content}</div>
-                          <div className="chat-time">
-                            {formatTime(msg.time)}
-                          </div>
-                        </div>
-                      </div>
+              {(selectedUser
+                ? privateMessages[selectedUser] || []
+                : messages
+              ).map((msg, index) => (
+                <div
+                  key={index}
+                  className={`chat-msg ${
+                    (msg.user || msg.from) === userName ? "self" : "other"
+                  }`}
+                >
+                  <div className="chat-msg-wrapper">
+                    <div className="chat-avatar">{getInitials(msg.user || msg.from)}</div>
+                    <div className="chat-content">
+                      <span className="chat-user">{msg.user || msg.from}</span>
+                      <div className="chat-text">{msg.content}</div>
+                      <div className="chat-time">{formatTime(msg.time)}</div>
                     </div>
-                  ))
-                : messages.map((msg, index) => (
-                    <div
-                      key={index}
-                      className={`chat-msg ${
-                        msg.user === userName || msg.from === userName
-                          ? "self"
-                          : "other"
-                      }`}
-                    >
-                      <div className="chat-msg-wrapper">
-                        <div className="chat-avatar">
-                          {getInitials(msg.user || msg.from)}
-                        </div>
-                        <div className="chat-content">
-                          <span className="chat-user">
-                            {msg.user || msg.from}
-                          </span>
-                          <div className="chat-text">{msg.content}</div>
-                          <div className="chat-time">
-                            {formatTime(msg.time)}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                  </div>
+                </div>
+              ))}
               <div ref={chatEndRef} />
               {typingIndicators[selectedUser || "public"]?.length > 0 && (
                 <div className="typing-indicator">
                   {typingIndicators[selectedUser || "public"].join(", ")}{" "}
-                  {typingIndicators[selectedUser || "public"].length === 1
-                    ? "is"
-                    : "are"}{" "}
-                  typing...
+                  {typingIndicators[selectedUser || "public"].length === 1 ? "is" : "are"} typing...
                 </div>
               )}
             </div>
           </div>
+
           <div className="chat-input">
             <button onClick={() => setShowEmojiPicker(!showEmojiPicker)}>
               😊
             </button>
+            {showEmojiPicker && (
+              <div className="emoji-picker">
+                <EmojiPicker onEmojiClick={handleEmojiClick} />
+              </div>
+            )}
             <input
               type="text"
+              placeholder={selectedUser ? `Message ${selectedUser}` : "Type a message..."}
               value={message}
               onChange={handleInputChange}
-              placeholder="Type a message..."
-              onKeyDown={(e) =>
-                e.key === "Enter" &&
-                (selectedUser ? sendPrivateMessage() : sendMessage())
-              }
+              onKeyDown={(e) => e.key === "Enter" && (selectedUser ? sendPrivateMessage() : sendMessage())}
             />
-            <button onClick={selectedUser ? sendPrivateMessage : sendMessage}>
-              Send
-            </button>
+            <button onClick={selectedUser ? sendPrivateMessage : sendMessage}>Send</button>
           </div>
-          {showEmojiPicker && (
-            <div className="emoji-picker">
-              <EmojiPicker onEmojiClick={handleEmojiClick} />
-            </div>
-          )}
         </>
       )}
     </div>
