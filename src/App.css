@@ -144,7 +144,7 @@ body {
 .chat-body {
   display: flex;
   overflow-y: auto;
-  height: 500px;
+  height: 450px;
 }
 
 .user-list {
